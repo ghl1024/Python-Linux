@@ -1,0 +1,344 @@
+centos7.2单机版部署ELK
+IP:10.0.0.137
+4G内存
+
+1.修改open files
+[root@elk ~]#cp /etc/security/limits.d/20-nproc.conf /etc/security/limits.d/20-nproc.conf.bak
+[root@elk ~]#vi /etc/security/limits.d/90-nproc.conf
+#至少为2046
+* soft nproc 2048
+[root@elk ~]#vi /etc/sysctl.conf
+vm.max_map_count=655360
+[root@elk ~]#sysctl -p
+[root@elk ~]# cp /etc/security/limits.conf /etc/security/limits.conf.bak
+[root@elk ~]# vi /etc/security/limits.conf
+* soft nofile 65536
+* hard nofile 131072
+* soft nproc 2048
+* hard nproc 4096
+
+2.创建目录
+[root@es ~]# mkdir -p /server/application
+[root@es ~]# cd /server/application
+将包全部传到这个目录下
+[root@es application]# ll
+总用量 1095532
+-rw-r--r--  1 root root  83709983 11月 15 2017 boost_1_59_0.tar.gz
+drwxr-xr-x  9 elk  elk        145 1月   3 15:20 elasticsearch-5.3.0
+-rw-r--r--  1 root root  33696963 3月  15 2018 elasticsearch-5.3.0.tar.gz
+-rw-r--r--  1 root root    907325 3月  28 2018 elasticsearch-head-master.zip
+drwxr-xr-x  8   10  143      4096 7月  22 2017 jdk1.8.0_144
+-rw-r--r--  1 root root 185515842 9月   7 2017 jdk-8u144-linux-x64.tar.gz
+drwxrwxr-x 12 ghl  ghl       4096 3月  23 2017 kibana-5.3.0-linux-x86_64
+-rw-r--r--  1 root root  38912478 3月  15 2018 kibana-5.3.0-linux-x86_64.tar.gz
+drwxr-xr-x 13 root root      4096 1月   3 16:37 logstash-5.3.0
+-rw-r--r--  1 root root  94087323 3月  15 2018 logstash-5.3.0.tar.gz
+-rw-r--r--  1 root root 683233280 11月 13 2017 mysql-5.7.17-linux-glibc2.5-x86_64.tar
+drwxr-xr-x  4 root root       109 1月   4 14:53 redis
+drwxrwxr-x  7 root root      4096 1月   3 14:36 redis-4.0.8
+-rw-r--r--  1 root root   1729973 4月  29 2018 redis-4.0.8.tar.gz
+
+
+3.安装docker
+[root@es application]# wget -O /etc/yum.repos.d/docker-ce.repo https://mirrors.ustc.edu.cn/docker-ce/linux/centos/docker-ce.repo
+[root@es application]# sed -i 's#download.docker.com#mirrors.ustc.edu.cn/docker-ce#g' /etc/yum.repos.d/docker-ce.repo
+[root@es application]# yum install docker-ce -y
+[root@es application]# systemctl enable docker.service 
+
+4.安装nginx
+[root@es application]# yum install -y nginx
+[root@es ~]# cd /etc/nginx/
+[root@es nginx]# cp nginx.conf nginx.conf.bak
+[root@es nginx]# vim nginx.conf
+（在http模块下添加）
+log_format json '{"@timestamp":"$time_iso8601",'
+             '"@version":"1",'
+             '"client":"$remote_addr",'
+             '"url":"$uri",'
+             '"status":"$status",'
+             '"domian":"$host",'
+             '"host":"$server_addr",'
+             '"size":"$body_bytes_sent",'
+             '"responsetime":"$request_time",'
+             '"referer":"$http_referer",'
+             '"ua":"$http_user_agent"'
+          '}';
+修改access_log的输出格式为刚才定义的json 
+access_log  logs/elk.access.log  json;
+[root@es nginx]# nginx -t
+[root@es nginx]# systemctl start nginx.service 
+[root@es nginx]# systemctl enable nginx.service
+
+5.安装redis
+[root@es application]# tar xf redis-4.0.8.tar.gz
+[root@es application]# cd redis-4.0.8/
+[root@es redis-4.0.8]# make PREFIX=/server/application/redis-4.0.8/ install
+[root@es bin]# cd /server/application
+[root@es application]# mkdir -p redis/{run,log,data}
+[root@es application]# cd redis
+[root@es redis]# cp /server/application/redis-4.0.8/bin/redis-server /server/application/redis
+[root@es redis]# cp /server/application/redis-4.0.8/bin/redis-cli /server/application/redis
+[root@es redis]# cp /server/application/redis-4.0.8/redis.conf /server/application/redis
+[root@es application]# cd redis
+[root@es redis]# vim redis.conf 
+#主要修改一下几项：
+logfile "/server/application/redis/redis.log"
+pidfile /server/application/redis/run/redis.pid
+daemonize yes
+port 6379
+bind 0.0.0.0
+dir /server/application/redis/data
+requirepass 123456
+修改完保存退出
+启动
+[root@es application]# cd redis
+[root@es redis]# ./redis-server ./redis.conf
+[root@es redis]# netstat -tunlp|grep 6379
+创建redis命令软连接
+[root@es redis]# ln -s /server/application/redis/redis-cli /usr/bin/redis
+测试
+[root@es redis]# redis -h 10.0.0.137 -p 6379 -a 123456
+10.0.0.137:6379> ping
+PONG
+10.0.0.137:6379> exit
+添加开机启动服务
+[root@es system]# cat /etc/systemd/system/redis.service
+[Unit]
+Description=Redis Server Manager
+After=syslog.target
+After=network.target
+[Service]
+Type=simple
+User=redis
+Group=redis
+PIDFile=/server/application/redis/run/redis.pid
+ExecStart=/server/application/redis/redis-server /server/application/redis/redis.conf 
+ExecStop=/server/application/redis/redis-cli shutdown
+Restart=always
+[Install]
+WantedBy=multi-user.target
+[root@es system]# systemctl daemon-reload 
+[root@es system]# systemctl enable redis.service
+
+
+6.安装JDK
+查看Linux自带的JDK是否已安装
+java -version
+查看JDK信息
+rpm -qa | grep java
+卸载（有几个卸载几个）
+rpm -e --nodeps java-x.x.x-gcj-compat-x.x.x.x-xxjpp.xxx
+rpm -e --nodeps java-x.x.x-openjdk-x.x.x.x-x.x.bxx.exx
+安装
+[root@es ~]# cd /server/application/
+[root@es application]# tar xf jdk-8u144-linux-x64.tar.gz
+配置环境变量
+[root@es application]# vim /etc/profile
+在文件尾部添加如下配置：
+export JAVA_HOME=/server/application/jdk1.8.0_144
+export CLASSPATH=.:$JAVA_HOME/jre/lib/rt.jar:$JAVA_HOME/lib/dt.jar:$JAVA_HOME/lib/tools.jar 
+export PATH=$PATH:$JAVA_HOME/bin
+:wq
+生效配置
+source /etc/profile
+测试
+[root@es jdk1.8.0_144]# java -version
+java version "1.8.0_144"
+Java(TM) SE Runtime Environment (build 1.8.0_144-b01)
+Java HotSpot(TM) 64-Bit Server VM (build 25.144-b01, mixed mode)
+[root@es jdk1.8.0_144]# 
+
+
+7.安装mysql
+rpm -qa | grep mysql
+rpm -qa|grep -i mariadb
+rpm -qa|grep mariadb|xargs rpm -e --nodeps
+rpm -qa|grep -i mariadb
+[root@es application]# groupadd mysql
+[root@es application]# useradd -g mysql -s /sbin/nologin mysql
+[root@es application]# tar xf mysql-5.7.17-linux-glibc2.5-x86_64.tar 
+[root@es application]# tar xf boost_1_59_0.tar.gz 
+[root@es application]# yum install libaio -y
+[root@es application]# wget http://repo.mysql.com/mysql-community-release-el7-5.noarch.rpm
+[root@es application]# rpm -ivh mysql-community-release-el7-5.noarch.rpm
+[root@es application]# yum install -y mysql-server
+[root@es application]# systemctl enable mysqld.service 
+[root@es application]# systemctl start mysqld.service
+[root@es application]# mysql_secure_installation
+
+8.安装elasticsearch
+[root@es application]# cd /server/application
+[root@es application]# adduser  -s /bin/bash -c 'elk' -m -d /home/elk elk
+[root@es application]# tar xf elasticsearch-5.3.0.tar.gz 
+[root@es application]# cd elasticsearch-5.3.0/
+[root@es elasticsearch-5.3.0]# mkdir -p ./{data,logs}
+[root@es elasticsearch-5.3.0]# cd config/
+[root@es config]# cp elasticsearch.yml elasticsearch.yml.bak
+[root@es config]# vim elasticsearch.yml
+#修改以下几项
+[elk@es config]$egrep -v "^$|[#]" elasticsearch.yml
+path.data: /server/application/elasticsearch-5.3.0/data
+path.logs: /server/application/elasticsearch-5.3.0/logs
+network.host: 10.0.0.137
+http.port: 9200
+http.cors.enabled: true
+http.cors.allow-origin: "*"
+[root@es config]# chown -R elk.elk /server/application/elasticsearch-5.3.0/
+启动
+[root@es ~]# su - elk
+[elk@es ~]$ /server/application/elasticsearch-5.3.0/bin/elasticsearch -d
+后台启动：
+nohup /server/application/elasticsearch-5.3.0/bin/elasticsearch > /server/application/elasticsearch-5.3.0/logs/es.log 2>&1 &
+时间可能比较长，可查看9200端口是否起来
+测试出现以下情况，证明elasticsearch可用
+[elk@es ~]$curl 192.168.201.135:9200
+.........
+"tagline" : "You Know, for Search"
+}
+安装elasticsearch-head
+[elk@es ~]$  su - root
+[root@es ~]# ln -s /data/application/elasticsearch-5.3.0/bin/elasticsearch /bin/
+#docker加速可参考：https://www.daocloud.io/mirror
+[root@es ~]# docker pull mobz/elasticsearch-head:5
+[root@es ~]# docker run -d -p 9100:9100 --restart=always mobz/elasticsearch-head:5  
+然后浏览器访问http:10.0.0.137:9100
+
+
+9.安装Logstash
+root用户下
+[root@es ~]# cd /server/application/
+[root@es application]# tar xf logstash-5.3.0.tar.gz
+[root@es application]# cd /server/application/logstash-5.3.0/
+[root@es application]# cd /etc/systemd/system
+[root@es system]# vim logstash.service
+[Service]
+ExecStart=/server/application/logstash-5.3.0/bin/logstash
+[Install]
+WantedBy=multi-user.target
+[root@es system]# systemctl daemon-reload
+[root@es system]# systemctl enable logstash.service
+[root@es logstash-5.3.0]# ln -s /server/application/logstash-5.3.0/bin/logstash /bin/
+[root@es logstash-5.3.0]# mkdir -p /server/application/logstash-5.3.0/server-conf
+[root@es logstash-5.3.0]# cd /server/application/logstash-5.3.0/server-conf
+[root@es server-conf]# vim full.conf
+input {
+    file {
+        path => "/var/log/messages"
+        type => "system"
+        start_position => "beginning"
+        }
+
+    file {
+        path => "/var/log/secure"
+        type => "secure"
+        start_position => "beginning"
+        }
+
+    file {
+        path => "/var/log/nginx/access.log"
+        type => "nginx-access"
+        start_position => "beginning"
+        }
+
+    file {
+        path => "/var/log/nginx/error.log"
+        type => "nginx-error"
+        start_position => "beginning"
+        }
+
+    file {
+        path => "/server/application/redis/log/redis.log"
+        type => "redis"
+        start_position => "beginning"
+        }	
+
+    file {
+        path => "/var/log/mysql.log"
+        type => "mysql"
+        start_position => "beginning"
+        }			
+    }
+
+output {
+    if [type] == "nginx-access" {
+        elasticsearch {
+            hosts => ["10.0.0.137"]
+            index => "elk-nginx-access-%{+YYYY.MM.dd}"
+        }
+    }
+
+    if [type] == "nginx-error" {
+        elasticsearch {
+            hosts => ["10.0.0.137"]
+            index => "elk-nginx-error-%{+YYYY.MM.dd}"
+        }
+    }
+
+    if [type] == "secure" {
+        elasticsearch {
+            hosts => ["10.0.0.137"]
+            index => "elk-secure-%{+YYYY.MM.dd}"
+        }
+    }
+
+    if [type] == "system" {
+        elasticsearch {
+            hosts => ["10.0.0.137"]
+            index => "elk-system-%{+YYYY.MM.dd}" 
+        }
+    }
+	
+    if [type] == "redis" {
+        elasticsearch {
+            hosts => ["10.0.0.137"]
+            index => "elk-redis-%{+YYYY.MM.dd}" 
+        }
+    }
+
+    if [type] == "mysql" {
+        elasticsearch {
+            hosts => ["10.0.0.137"]
+            index => "elk-mysql-%{+YYYY.MM.dd}" 
+        }
+    }		
+}
+
+
+
+
+10.安装kibana
+[root@es ~]# cd /server/application/
+[root@es application]# tar xf kibana-5.3.0-linux-x86_64.tar.gz 
+[root@es application]# cd kibana-5.3.0-linux-x86_64/
+[root@es kibana-5.3.0-linux-x86_64]# cd config/
+[root@es config]# cp kibana.yml kibana.yml.bak
+[root@es config]# vim kibana.yml
+[root@es config]# egrep -v "^$|^[#]" kibana.yml
+server.port: 5601
+server.host: "10.0.0.137"
+elasticsearch.url: "http://10.0.0.137:9200"
+kibana.index: ".kibana"
+设置kibana开机自启
+[root@es ~]# ln -s /server/application/kibana-5.3.0-linux-x86_64/bin/kibana /bin/
+[root@es ~]# cd /etc/systemd/system/
+[root@es system]# vim kibana.service
+[Service]
+ExecStart=/server/application/kibana-5.3.0-linux-x86_64/bin/kibana
+[Install]
+WantedBy=multi-user.target
+[root@es system]# systemctl daemon-reload
+[root@es system]# systemctl enable kibana.service
+
+
+11.安装grafana
+Redhat & Centos(64 Bit)
+wget https://dl.grafana.com/oss/release/grafana-5.4.2-1.x86_64.rpm 
+yum localinstall -y grafana-5.4.2-1.x86_64.rpm 
+systemctl enable grafana-server.service 
+systemctl start grafana-server.service
+
+创建软连接
+ln -s /data/application/logstash-5.3.0/bin/logstash /bin/
+ln -s /data/application/elasticsearch-5.3.0/bin/elasticsearch /bin/
+ln -s /data/application/kibana-5.3.0-linux-x86_64/bin/kibana /bin/
+
