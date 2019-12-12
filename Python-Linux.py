@@ -39,7 +39,7 @@ net_out = psutil.net_io_counters().bytes_sent/1048576
 
 
 ##建立一个列表存放获取的系统信息
-text = [time,outside_ipaddr,intside_ipaddr,hostname,user_cpu_time,cpu_number,mem_total,mem_free,mem_used,disk_total,disk_used,disk_free,net_in,net_out]
+text = [time,outside_ipaddr,inside_ipaddr,hostname,user_cpu_time,cpu_number,mem_total,mem_free,mem_used,disk_total,disk_used,disk_free,net_in,net_out]
 
 workbook = xlsxwriter.Workbook('巡检.xlsx')    ##建立一个excel表格
 ##建立一个工作表对象，也就是excel左下角的sheet1，sheet2等，这里建立了一个。
